@@ -2820,11 +2820,17 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
                             dst, DnnlGemmWrapper::to_dt<float>(), queue, batches_a, batches_b);
         };
 
+    printf("new code works, ne00:%d ne01:%d ne02:%d ne03:%d ne10:%d ne11:%d ne12:%d ne13:%d\n", ne00, ne01, ne02, ne03, ne10, ne11, ne12, ne13);
+    printf("                nb00:%d nb01:%d nb02:%d nb03:%d nb10:%d nb11:%d nb12:%d nb13:%d\n", nb00, nb01, nb02, nb03, nb10, nb11, nb12, nb13);
+    printf("name0:%s name1:%s viewsrc0:%p viewsrc1:%p\n", src0->name, src1->name, src0->view_src, src1->view_src);       
+
         if (r2 == 1 && r3 == 1) {
-            if (ggml_is_contiguous_2(src0) && ggml_is_contiguous_2(src1)) {
+	   printf("case 1, contiguous");
+	   if (ggml_is_contiguous_2(src0) && ggml_is_contiguous_2(src1)) {
                 dnn_gemm(src1_f16, src0_f16, dst_ddf, ne12*ne13, ne02 * ne03);
             }
             else {
+	        printf("case 2, non-contiguous");
                 const auto nb13_scaled = src1->type == GGML_TYPE_F16 ? nb13 : nb13 / 2;
 
                 for (int64_t ie03 = 0; ie03 < ne03; ++ie03) {
@@ -2835,6 +2841,7 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
                 }
             }
         } else {
+	    printf("case 3, scaled");
             // nb1X_scaled is in bytes as if matrix 1 type would be sycl::half (it may be already such or it may be 4-bytes)
             const auto nb12_scaled = src1->type == GGML_TYPE_F16 ? nb12 : nb12 / 2;
             const auto nb13_scaled = src1->type == GGML_TYPE_F16 ? nb13 : nb13 / 2;
@@ -2853,6 +2860,7 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
     else
 #endif
     {
+        printf("case 4, MKL");
         if (r2 == 1 && r3 == 1 && ggml_is_contiguous_2(src0) && ggml_is_contiguous_2(src1)) {
             // there is no broadcast and src0, src1 are contiguous across dims 2, 3
             SYCL_CHECK(CHECK_TRY_ERROR(dpct::gemm_batch(*queue, oneapi::math::transpose::trans,
@@ -3027,7 +3035,7 @@ static void opt_for_reorder(ggml_backend_sycl_context * ctx, const ggml_tensor *
 }
 
 static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-
+    printf("MNOZENIE\n");
     const bool split = ggml_backend_buffer_is_sycl_split(src0->buffer);
     int64_t min_compute_capability = INT_MAX;
 
@@ -3408,6 +3416,7 @@ catch (sycl::exception const &exc) {
 }
 
 static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct ggml_tensor * dst) try {
+    printf("sycl forward, dstop:%d\n", dst->op);
     if (!g_sycl_loaded) return false;
 
     if (dst->src[0] != nullptr && ggml_backend_buffer_is_sycl_split(dst->src[0]->buffer)) {
@@ -3441,6 +3450,7 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
             ggml_sycl_acc(ctx, dst);
             break;
         case GGML_OP_MUL:
+            printf("calling ggml_sycl_mul\n");
             ggml_sycl_mul(ctx, dst);
             break;
         case GGML_OP_LOG:
@@ -3748,6 +3758,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
+        printf("ggml_is_empty(node):%d op:%d\n", ggml_is_empty(node), node->op);
         if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
             continue;
         }
@@ -3768,6 +3779,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
 }
 
 static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    printf("cos sie dzieje w syclu\n");
     auto * sycl_ctx = static_cast<ggml_backend_sycl_context *>(backend->context);
 
 #ifdef GGML_SYCL_GRAPH

@@ -1837,9 +1837,11 @@ bool ggml_backend_compare_graph_backend(ggml_backend_t backend1, ggml_backend_t 
 
         struct ggml_cgraph g1v = ggml_graph_view(g1, i, i + 1);
         struct ggml_cgraph g2v = ggml_graph_view(g2, i, i + 1);
-
+        printf("wolam pierwsze compute\n");
         ggml_backend_graph_compute(backend1, &g1v);
+        printf("wolam drugie compute\n");
         ggml_backend_graph_compute(backend2, &g2v);
+        printf("teraz bedzie porownywanie\n");
 
         if (ggml_is_view_op(t1->op)) {
             continue;
@@ -1847,8 +1849,11 @@ bool ggml_backend_compare_graph_backend(ggml_backend_t backend1, ggml_backend_t 
 
         // compare results, calculate rms etc
         if (!callback(i, t1, t2, user_data)) {
+
+            printf("chyba sie nie udalo\n");
             break;
         }
+        printf("jest ok\n");
     }
 
     ggml_backend_graph_copy_free(copy);

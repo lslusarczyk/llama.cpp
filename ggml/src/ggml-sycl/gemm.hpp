@@ -59,6 +59,18 @@ public:
         dnnl::memory::dims a_strides = { stride_a, nra, nca };
         dnnl::memory::dims b_strides = { stride_b, nrb, ncb };
 
+        printf("m:%d, n:%d, k:%d, strides_a:", m, n, k);
+        for (auto x : a_strides) {
+            printf(" %d", x);
+        }
+        printf("; strides_b:");
+        for (auto x : b_strides) {
+            printf(" %d", x);
+        }
+        printf("\n");
+
+        printf("a_dims: %d %d %d, b_dims: %d %d %d, c_dims: %d %d %d\n", a_dims[0], a_dims[1], a_dims[2], b_dims[0], b_dims[1], b_dims[2], c_dims[0], c_dims[1], c_dims[2]);
+
         const auto a_in_md = dnnl::memory::desc(a_dims, at, a_strides);
         const auto b_in_md = dnnl::memory::desc(b_dims, bt, b_strides);
         const auto c_md    = dnnl::memory::desc(c_dims, ct, tag::abc);
