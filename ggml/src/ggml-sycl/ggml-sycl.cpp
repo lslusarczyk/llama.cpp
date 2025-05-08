@@ -2741,6 +2741,13 @@ static void k_compute_batched_ptrs(const sycl::half * src0_as_f16, const sycl::h
 
 static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
                                            const ggml_tensor * src1, ggml_tensor * dst) try {
+    printf("input tensors are:\nsrc0.data:%p src0.buf:%p src0.type:%d\nsrc1.data:%p src1.buf:%p src1.type:%d\ndst.data:%p dst.buf:%p dst.type:%d\n",
+       src0->data, src0->buffer, src0->type, src1->data, src1->buffer, src1->type, dst->data, dst->buffer, dst->type);
+
+    sycl::half juju0[1024];
+    ggml_backend_tensor_get(src0, &juju0, 0, 10*sizeof(sycl::half));
+    for (int i = 0; i < 10; i++) printf("src0 idx:%d val:%f\n", i, static_cast<float>(juju0[i]));
+
     GGML_ASSERT(!ggml_is_transposed(src0));
     GGML_ASSERT(!ggml_is_transposed(src1));
     GGML_ASSERT(!ggml_backend_buffer_is_sycl_split(src0->buffer));
@@ -2785,6 +2792,12 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
         s13      = ne12 * s12;
     }
 
+    if (src1->type == GGML_TYPE_F32) {
+        float juju1[1024];
+        ggml_backend_tensor_get(src1, &juju1, 0, 10*sizeof(float));
+        for (int i = 0; i < 10; i++) printf("src1 idx:%d val:%f\n", i, static_cast<float>(juju1[i]));
+    }
+
     ggml_sycl_pool_alloc<sycl::half> dst_f16(ctx.pool());
 
     dpct::library_data_t mkl_compute_type = dpct::library_data_t::real_float;
@@ -2824,7 +2837,7 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
     printf("                nb00:%d nb01:%d nb02:%d nb03:%d nb10:%d nb11:%d nb12:%d nb13:%d\n", nb00, nb01, nb02, nb03, nb10, nb11, nb12, nb13);
     printf("name0:%s name1:%s viewsrc0:%p viewsrc1:%p\n", src0->name, src1->name, src0->view_src, src1->view_src);       
 
-        if (r2 == 1 && r3 == 1) {
+       if (r2 == 1 && r3 == 1) {
 	   printf("case 1, contiguous");
 	   if (ggml_is_contiguous_2(src0) && ggml_is_contiguous_2(src1)) {
                 dnn_gemm(src1_f16, src0_f16, dst_ddf, ne12*ne13, ne02 * ne03);
@@ -2894,6 +2907,11 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
                 (void **) (ptrs_dst.get() + 0 * ne23), mkl_data_type, ne0, ne23, mkl_compute_type, matrix_info.get())));
         }
     }
+
+    queue->wait();
+    float juju7[128*4];
+    SYCL_CHECK(CHECK_TRY_ERROR(queue->memcpy(juju7, dst_ddf, 128*4*sizeof(float)).wait()));
+    for (int i = 0; i < 128*4; i++) { printf("dstAfterDNNCall idx:%d val:%f\n", i, static_cast<float>(juju7[i])); }
 } catch (const sycl::exception & exc) {
     std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
     std::exit(1);
