@@ -2716,7 +2716,7 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-static void k_compute_batched_ptrs(const sycl::half * src0_as_f16, const sycl::half * src1_as_f16, char * dst,
+static void k_compute_batched_ptrs(const sycl::half * src0_as_f16, const sycl::half * src1_as_f16, void * dst,
                                    const void ** ptrs_src, void ** ptrs_dst, int64_t ne12, int64_t ne13, int64_t ne23,
                                    size_t nb02, size_t nb03, size_t nb12, size_t nb13, size_t nbd2, size_t nbd3,
                                    int64_t r2, int64_t r3, const sycl::nd_item<3> & item_ct1) {
@@ -2732,7 +2732,7 @@ static void k_compute_batched_ptrs(const sycl::half * src0_as_f16, const sycl::h
 
     const uint8_t * src0_bytes = reinterpret_cast<const uint8_t *>(src0_as_f16);
     const uint8_t * src1_bytes = reinterpret_cast<const uint8_t *>(src1_as_f16);
-    uint8_t *       dst_bytes  = reinterpret_cast<uint8_t *>(dst);
+    uint8_t *       dst_bytes  = static_cast<uint8_t *>(dst);
 
     ptrs_src[0 * ne23 + i12 + i13 * ne12] = src0_bytes + i02 * nb02 + i03 * nb03;
     ptrs_src[1 * ne23 + i12 + i13 * ne12] = src1_bytes + i12 * nb12 + i13 * nb13;
@@ -2786,7 +2786,6 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
     }
 
     ggml_sycl_pool_alloc<sycl::half> dst_f16(ctx.pool());
-    char *                           dst_t = reinterpret_cast<char *>(dst_ddf);
 
     dpct::library_data_t mkl_compute_type = dpct::library_data_t::real_float;
     dpct::library_data_t mkl_data_type    = dpct::library_data_t::real_float;
@@ -2859,7 +2858,7 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
             SYCL_CHECK(CHECK_TRY_ERROR(dpct::gemm_batch(*queue, oneapi::math::transpose::trans,
                                                         oneapi::math::transpose::nontrans, ne01, ne11, ne10, alpha,
                                                         src0_f16, dpct::library_data_t::real_half, nb01 / nb00, nb02 / nb00,
-                                                        src1_f16, dpct::library_data_t::real_half, s11, s12, beta, dst_t,
+                                                        src1_f16, dpct::library_data_t::real_half, s11, s12, beta, dst_ddf,
                                                         mkl_data_type, ne0, ne1 * ne0, ne12 * ne13, mkl_compute_type)));
         } else {
             const int ne23 = ne12 * ne13;
