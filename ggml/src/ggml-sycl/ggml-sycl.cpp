@@ -2909,9 +2909,9 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
     }
 
     queue->wait();
-    float juju7[128*4];
+    float juju7[8*4];
     SYCL_CHECK(CHECK_TRY_ERROR(queue->memcpy(juju7, dst_ddf, 128*4*sizeof(float)).wait()));
-    for (int i = 0; i < 128*4; i++) { printf("dstAfterDNNCall idx:%d val:%f\n", i, static_cast<float>(juju7[i])); }
+    for (int i = 0; i < 8*4; i++) { printf("dstAfterDNNCall idx:%d val:%f\n", i, juju7[i]); }
 } catch (const sycl::exception & exc) {
     std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
     std::exit(1);

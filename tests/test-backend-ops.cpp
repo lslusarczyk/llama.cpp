@@ -4284,8 +4284,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         for (auto nr : {1,4}) {
             for (uint32_t m = 0; m < 2; ++m) {
                 for (uint32_t k = 0; k < 2; ++k) {
-                    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 5 + m, 1, 128 + k,  {bs,  1}, {nr, 1}, {0, 2, 1, 3}));
-                    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 128 + m,  1, 5 + k, {bs,  1}, {nr, 1}, {0, 1, 2, 3}, true));
+                    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 5 + m, 1, 8 + k,  {bs,  1}, {nr, 1}, {0, 2, 1, 3}));
+                    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 8 + m,  1, 5 + k, {bs,  1}, {nr, 1}, {0, 1, 2, 3}, true));
                 }
             }
         }

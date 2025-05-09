@@ -20,6 +20,22 @@
 #include "dnnl.hpp"
 #include "dnnl_sycl.hpp"
 
+void read_from_dnnl_memory(void *handle, dnnl::memory &mem, const queue_ptr queue) {
+    size_t size = mem.get_desc().get_size();
+
+    if (!handle) throw std::runtime_error("handle is nullptr.");
+    auto mkind = dnnl::sycl_interop::get_memory_kind(mem);
+
+    if (mkind != dnnl::sycl_interop::memory_kind::usm) throw std::runtime_error("invalid memory kind.");
+    uint8_t *src_ptr = (uint8_t *)mem.get_data_handle();
+    if (!src_ptr) {
+        throw std::runtime_error("get_data_handle returned nullptr.");
+    }
+    printf("copy %ld bytes from handle:%p into:%p\n", size, handle, src_ptr);
+    queue->memcpy(handle, src_ptr, size).wait();
+}
+
+
 class DnnlGemmWrapper {
 public:
     using dt = dnnl::memory::data_type;
@@ -80,6 +96,19 @@ public:
 
         auto a_mem = dnnl::memory(a_in_md, eng, const_cast<void*>(a));
         auto b_mem = dnnl::memory(b_in_md, eng, const_cast<void*>(b));
+
+        sycl::half a_to_print[40];
+        sycl::half b_to_print[80];//, -1);
+        stream.wait();
+        read_from_dnnl_memory(a_to_print, a_mem, q);
+        read_from_dnnl_memory(b_to_print, b_mem, q);
+        for (std::size_t i = 0; i < 40; ++i) {
+            printf("a, idx:%lu val:%f\n", i, static_cast<float>(a_to_print[i]));
+        }
+        for (std::size_t i = 0; i < 80; ++i) {
+            printf("b, idx:%lu val:%f\n", i, static_cast<float>(b_to_print[i]));
+        }
+
         auto matmul_pd = dnnl::matmul::primitive_desc(eng, a_in_md, b_in_md, c_md, primitive_attr);
         auto c_mem = dnnl::memory(matmul_pd.dst_desc(), eng, c);
 
@@ -94,6 +123,13 @@ public:
         matmul_args.insert({ DNNL_ARG_SCRATCHPAD, scratchpad_mem });
 
         matmul_prim.execute(stream, matmul_args);
+        stream.wait();
+
+        sycl::half c_to_print[32];
+        read_from_dnnl_memory(c_to_print, c_mem, q);
+        for (std::size_t i = 0; i < 32; ++i) {
+            printf("c, idx:%lu val:%f\n", i, static_cast<float>(c_to_print[i]));
+        }
     }
 
     // matrices A and B are column major, both having k rows
