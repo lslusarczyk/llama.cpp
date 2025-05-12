@@ -2824,11 +2824,11 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
 
 #if GGML_SYCL_DNNL
     if (!g_ggml_sycl_disable_dnn) {
-        auto dnn_gemm = [&ctx, queue, ne11, ne01, ne10, nb00, nb01, nb02, nb10, nb11, nb12]
+        auto dnn_gemm = [&ctx, queue, ne11, ne01, ne10, nb00, nb01, nb02, s11, s12]
             (const sycl::half* src1, const sycl::half* src0, float* dst, const dnnl_dim_t batches_a, const dnnl_dim_t batches_b) {
 
             DnnlGemmWrapper::gemm(ctx, ne11,ne01, ne10,
-                            src1, DnnlGemmWrapper::to_dt<sycl::half>(), nb11/nb10, 1, nb12/nb10,
+                            src1, DnnlGemmWrapper::to_dt<sycl::half>(), s11, 1, s12,
                             src0, DnnlGemmWrapper::to_dt<sycl::half>(), 1, nb01/nb00, nb02/nb00,
                             dst, DnnlGemmWrapper::to_dt<float>(), queue, batches_a, batches_b);
         };
@@ -2844,11 +2844,11 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
             }
             else {
 	        printf("case 2, non-contiguous");
-                const auto nb13_scaled = src1->type == GGML_TYPE_F16 ? nb13 : nb13 / 2;
+                //const auto nb13_scaled = src1->type == GGML_TYPE_F16 ? nb13 : nb13 / 2;
 
                 for (int64_t ie03 = 0; ie03 < ne03; ++ie03) {
                     const sycl::half* src0_f16_shifted = src0_f16 + ((ie03*nb03)/2); // div2 cuz nb is in bytes and pointer is in f16 (2 bytes)
-                    const sycl::half* src1_f16_shifted = src1_f16 + ((ie03*nb13_scaled)/2);
+                    const sycl::half* src1_f16_shifted = src1_f16 + ie03*s13;
                     float* dst_shifted = dst_ddf + ((ie03*nb3)/4); // div4 cuz nb is in bytes and pointer is float (4 bytes)
                     dnn_gemm(src1_f16_shifted, src0_f16_shifted, dst_shifted, ne12, ne02);
                 }
@@ -2856,14 +2856,14 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
         } else {
 	    printf("case 3, scaled");
             // nb1X_scaled is in bytes as if matrix 1 type would be sycl::half (it may be already such or it may be 4-bytes)
-            const auto nb12_scaled = src1->type == GGML_TYPE_F16 ? nb12 : nb12 / 2;
-            const auto nb13_scaled = src1->type == GGML_TYPE_F16 ? nb13 : nb13 / 2;
+            // const auto nb12_scaled = src1->type == GGML_TYPE_F16 ? nb12 : nb12 / 2;
+            // const auto nb13_scaled = src1->type == GGML_TYPE_F16 ? nb13 : nb13 / 2;
 
             // iterate over batches from smaller set of matrices (matrix 0)
             for (int64_t ie02 = 0; ie02 < ne02; ++ie02) {
                 for (int64_t ie03 = 0; ie03 < ne03; ++ie03) {
                     const sycl::half* src0_f16_shifted = src0_f16 + ((ie02*nb02 + ie03*nb03)/2); // div2 cuz nb is in bytes and pointer is in f16 (2 bytes)
-                    const sycl::half* src1_f16_shifted = src1_f16 + ((ie02*nb12_scaled*r2 + ie03*nb13_scaled*r3)/2);
+                    const sycl::half* src1_f16_shifted = src1_f16 + ie02*s12*r2 + ie03*s12*r3;
                     float* dst_shifted = dst_ddf + ((ie02*nb2*r2 + ie03*nb3*r3)/4); // div4 cuz nb is in bytes and pointer is float (4 bytes)
                     dnn_gemm(src1_f16_shifted, src0_f16_shifted, dst_shifted, r2*r3, 1);
                 }
