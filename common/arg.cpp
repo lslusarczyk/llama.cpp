@@ -684,6 +684,49 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
     }
 }
 
+bool common_params_resolve_model(common_params & params, llama_example ex, std::string * err_out) {
+    auto fail = [&](const std::string & msg) {
+        if (err_out) {
+            *err_out = msg;
+        }
+        return false;
+    };
+
+    try {
+        const bool has_hf     = !params.model.hf_repo.empty();
+        const bool has_url    = !params.model.url.empty();
+        const bool has_docker = !params.model.docker_repo.empty();
+        const bool has_path   = !params.model.path.empty();
+
+        if (!has_hf && !has_url && !has_docker && !has_path) {
+            return fail("no model source (use -m, --hf-repo, --model-url, or --docker-repo)");
+        }
+
+        if (has_path && !has_hf && !has_url && !has_docker) {
+            if (!std::filesystem::exists(params.model.path)) {
+                return fail("model file does not exist: " + params.model.path);
+            }
+            return true;
+        }
+
+        common_models_handler handler = common_models_handler_init(params, ex);
+        if (common_models_handler_is_preset_repo(handler)) {
+            return fail("HF repo is a preset bundle, not a single GGUF model");
+        }
+        common_models_handler_apply(handler, params);
+
+        if (params.model.path.empty()) {
+            return fail("failed to resolve model path");
+        }
+        if (!std::filesystem::exists(params.model.path)) {
+            return fail("model file does not exist: " + params.model.path);
+        }
+        return true;
+    } catch (const std::exception & e) {
+        return fail(e.what());
+    }
+}
+
 //
 // CLI argument parsing functions
 //

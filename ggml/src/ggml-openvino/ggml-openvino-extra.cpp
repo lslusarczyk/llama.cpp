@@ -1,9 +1,12 @@
 #include "ggml-openvino-extra.h"
 
+#include "ggml-openvino.h"
+
 #include "ggml-impl.h"
 #include "ggml.h"
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <openvino/runtime/intel_gpu/ocl/ocl.hpp>
 #include <openvino/runtime/intel_npu/level_zero/level_zero.hpp>
@@ -550,4 +553,33 @@ ggml_openvino_tensor_extra * ggml_openvino_create_tensor_extra(const ggml_tensor
     }
 
     return new ggml_openvino_tensor_extra(ov_tensor);
+}
+
+int ggml_openvino_list_devices(ggml_openvino_device_info * infos, int max_count) {
+    if (!infos || max_count <= 0) {
+        return 0;
+    }
+    try {
+        auto & core = ov_singleton_core();
+        const auto devs = core.get_available_devices();
+        int        n    = 0;
+        for (const auto & d : devs) {
+            if (n >= max_count) {
+                break;
+            }
+            ggml_openvino_device_info & out = infos[n];
+            std::memset(&out, 0, sizeof(out));
+            snprintf(out.ov_device, sizeof(out.ov_device), "%s", d.c_str());
+            std::string desc = d;
+            try {
+                desc = core.get_property(d, ov::device::full_name);
+            } catch (...) {
+            }
+            snprintf(out.description, sizeof(out.description), "%s", desc.c_str());
+            n++;
+        }
+        return n;
+    } catch (...) {
+        return 0;
+    }
 }

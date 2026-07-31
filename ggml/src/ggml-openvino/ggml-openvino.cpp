@@ -1356,11 +1356,19 @@ static ggml_backend_dev_t ggml_backend_openvino_reg_get_device(ggml_backend_reg_
     return ctx->devices[index];
 }
 
+static void * ggml_backend_openvino_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_openvino_list_devices") == 0) {
+        return (void *) ggml_openvino_list_devices;
+    }
+    return nullptr;
+}
+
 static const struct ggml_backend_reg_i ggml_backend_openvino_reg_interface = {
     /* .get_name         = */ ggml_backend_openvino_reg_get_name,
     /* .get_device_count = */ ggml_backend_openvino_reg_get_device_count,
     /* .get_device       = */ ggml_backend_openvino_reg_get_device,
-    /* .get_proc_address = */ NULL,
+    /* .get_proc_address = */ ggml_backend_openvino_reg_get_proc_address,
 };
 
 static void ggml_openvino_init() {

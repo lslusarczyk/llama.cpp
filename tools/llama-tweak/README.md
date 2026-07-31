@@ -20,15 +20,26 @@ Priority (same pattern as other llama.cpp paths):
 
 The cache stores a model fingerprint (size + mtime). Re-run `record` after the GGUF changes.
 
+## Show backends and config ids
+
+```bash
+llama-tweak show
+```
+
+Lists Vulkan / OpenVINO / SYCL devices detected in this build and the config ids used by `record` (e.g. `vulkan0`, `openvino1_sf`, `sycl0`). Phase-split configs are not included yet.
+
 ## Record (tuning)
 
 ```bash
 cd /path/where/you/want/cache
 llama-tweak record -m /path/model.gguf \
+  --backend all \
   --pp 128,512 \
   --tg 128 \
   --runs 3
 ```
+
+`--backend` defaults to `all` (every detected config). Example subset: `--backend vulkan0,openvino1_sf,sycl0`.
 
 - **`--pp`**: comma-separated prefill sizes (each tested with the same `--tg`).
 - **`--tg`**: single decode length (default `128`).

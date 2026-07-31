@@ -147,5 +147,8 @@ bool common_models_handler_is_preset_repo(const common_models_handler & handler)
 // download and update params with the downloaded model path
 void common_models_handler_apply(common_models_handler & handler, common_params & params, common_download_callback * callback = nullptr);
 
+// Resolve params.model.path from -m, --hf-repo, --model-url, etc. (download when needed).
+bool common_params_resolve_model(common_params & params, llama_example ex, std::string * err_out = nullptr);
+
 // initialize argument parser context - used by test-arg-parser and preset
 common_params_context common_params_parser_init(common_params & params, llama_example ex, void(*print_usage)(int, char **) = nullptr);

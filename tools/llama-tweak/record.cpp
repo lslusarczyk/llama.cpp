@@ -1,11 +1,13 @@
 #include "llama-tweak.h"
+#include "tweak-devices.h"
 
+#include "arg.h"
+#include "common.h"
 #include "ggml-backend.h"
 #include "llama-bench-api.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -19,69 +21,11 @@
 namespace fs = std::filesystem;
 using json     = nlohmann::ordered_json;
 
-struct tweak_case {
-    std::string tag;
-    std::string backend_kind;
-    std::string ggml_device;
-    std::string openvino_device;
-    int         openvino_stateful = 0;
-    bool        openvino_phase_split = false;
-    std::string openvino_prefill;
-    std::string openvino_decode;
-    std::string sycl_selector;
-    std::string vulkan_device;
-    std::string ov_cache_subdir;
-};
+static bool run_bench_capture(const std::string & model, int pp, int tg, const llama_tweak_bench_config & c,
+                              double & out_tps) {
+    llama_tweak_apply_bench_config_env(c, pp, tg);
 
-static std::vector<tweak_case> default_cases() {
-    const char * igpu = std::getenv("LL_OPENVINO_IGPU_DEVICE");
-    const std::string ig = igpu ? igpu : "GPU.0";
-    return {
-        {"openvino_CPU_sf0", "openvino", "OPENVINO0", "CPU", 0, false, {}, {}, {}, {}, "CPU_sf0"},
-        {"openvino_igpu_sf0", "openvino", "OPENVINO0", ig, 0, false, {}, {}, {}, {}, "igpu_sf0"},
-        {"openvino_igpu_sf1", "openvino", "OPENVINO0", ig, 1, false, {}, {}, {}, {}, "igpu_sf1"},
-        {"openvino_NPU_sf0", "openvino", "OPENVINO0", "NPU", 0, false, {}, {}, {}, {}, "NPU_sf0"},
-        {"openvino_split_CPU_igpu", "openvino", "OPENVINO0", "CPU", 1, true, "CPU", ig, {}, {}, "split_CPU_igpu"},
-        {"openvino_split_igpu_CPU", "openvino", "OPENVINO0", ig, 1, true, ig, "CPU", {}, {}, "split_igpu_CPU"},
-        {"sycl_dgpu_l0", "sycl", "SYCL0", {}, 0, false, {}, {}, "level_zero:0", {}, "sycl_l0_0"},
-        {"sycl_igpu_l1", "sycl", "SYCL0", {}, 0, false, {}, {}, "level_zero:1", {}, "sycl_l0_1"},
-        {"sycl_cpu", "sycl", "SYCL0", {}, 0, false, {}, {}, "*:cpu", {}, "sycl_cpu"},
-        {"vulkan_dgpu", "vulkan", "Vulkan0", {}, 0, false, {}, {}, {}, "Vulkan0", "vk0"},
-        {"vulkan_igpu", "vulkan", "Vulkan1", {}, 0, false, {}, {}, {}, "Vulkan1", "vk1"},
-    };
-}
-
-static void apply_case_env(const tweak_case & c, int pp, int tg) {
-    unsetenv("GGML_OPENVINO_PHASE_SPLIT");
-    unsetenv("GGML_OPENVINO_PREFILL_DEVICE");
-    unsetenv("GGML_OPENVINO_DECODE_DEVICE");
-    unsetenv("GGML_OPENVINO_DEVICE");
-    unsetenv("GGML_OPENVINO_STATEFUL_EXECUTION");
-    unsetenv("ONEAPI_DEVICE_SELECTOR");
-
-    std::string cache = "/tmp/llama_tweak_bench/" + c.ov_cache_subdir + "_" + std::to_string(pp) + "_" +
-                        std::to_string(tg);
-    setenv("GGML_OPENVINO_CACHE_DIR", cache.c_str(), 1);
-
-    if (c.backend_kind == "openvino") {
-        if (c.openvino_phase_split) {
-            setenv("GGML_OPENVINO_PHASE_SPLIT", "1", 1);
-            setenv("GGML_OPENVINO_PREFILL_DEVICE", c.openvino_prefill.c_str(), 1);
-            setenv("GGML_OPENVINO_DECODE_DEVICE", c.openvino_decode.c_str(), 1);
-            setenv("GGML_OPENVINO_DEVICE", c.openvino_device.c_str(), 1);
-        } else if (!c.openvino_device.empty()) {
-            setenv("GGML_OPENVINO_DEVICE", c.openvino_device.c_str(), 1);
-        }
-        setenv("GGML_OPENVINO_STATEFUL_EXECUTION", c.openvino_stateful ? "1" : "0", 1);
-    } else if (c.backend_kind == "sycl" && !c.sycl_selector.empty()) {
-        setenv("ONEAPI_DEVICE_SELECTOR", c.sycl_selector.c_str(), 1);
-    }
-}
-
-static bool run_bench_capture(const std::string & model, int pp, int tg, const tweak_case & c, double & out_tps) {
-    apply_case_env(c, pp, tg);
-
-    const std::string dev = c.backend_kind == "vulkan" ? c.vulkan_device : c.ggml_device;
+    const std::string dev = c.ggml_device;
 
     std::vector<std::string> args_s = {
         "llama-bench", "-m", model, "-r", "1", "--no-warmup", "-p", "0", "-n", "0",
@@ -194,9 +138,35 @@ static double stdev_vec(const std::vector<double> & v) {
 
 static void usage() {
     fprintf(stderr,
-            "usage: llama-tweak record -m model.gguf [--pp 128,512] [--tg 128] [--runs 3]\n"
-            "       [--output path.json]  (default cache: ./llama-tweak-<stem>.json, env LLAMA_TWEAK_CACHE)\n"
-            "       llama-tweak explain -m model.gguf [--pp N] [--tg N]\n");
+            "usage: llama-tweak show\n"
+            "       llama-tweak record (-m model.gguf | -hf user/model[:quant]) [--backend all|id,...]\n"
+            "           [--pp 128,512] [--tg 128] [--runs 3] [--output path.json]\n"
+            "       llama-tweak explain (-m model.gguf | -hf user/model[:quant]) [--pp N] [--tg N]\n");
+}
+
+static bool resolve_tweak_model(common_params & params, std::string & model_path, std::string & err) {
+    if (const char * tok = std::getenv("HF_TOKEN")) {
+        if (params.hf_token.empty() && tok[0] != '\0') {
+            params.hf_token = tok;
+        }
+    }
+    if (!params.model.hf_repo.empty()) {
+        if (params.offline) {
+            fprintf(stderr, "llama-tweak: using Hugging Face cache for %s (--offline)\n",
+                    params.model.hf_repo.c_str());
+        } else {
+            fprintf(stderr,
+                    "llama-tweak: resolving %s (HF API, then download if missing; "
+                    "file downloads show a progress bar on a TTY)...\n",
+                    params.model.hf_repo.c_str());
+        }
+    }
+    common_init();
+    if (!common_params_resolve_model(params, LLAMA_EXAMPLE_BENCH, &err)) {
+        return false;
+    }
+    model_path = params.model.path;
+    return true;
 }
 
 int llama_tweak_record_main(int argc, char ** argv) {
@@ -205,15 +175,27 @@ int llama_tweak_record_main(int argc, char ** argv) {
         return 1;
     }
     std::string cmd = argv[1];
+    common_params cparams;
     std::string model;
     std::string pp_list = "512";
     std::string tg_val  = "128";
     std::string out_path;
-    int         runs    = 3;
+    std::string backend_spec = "all";
+    int         runs         = 3;
 
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "-m") && i + 1 < argc) {
-            model = argv[++i];
+            cparams.model.path = argv[++i];
+        } else if ((!strcmp(argv[i], "-hf") || !strcmp(argv[i], "-hfr") || !strcmp(argv[i], "--hf-repo")) && i + 1 < argc) {
+            cparams.model.hf_repo = argv[++i];
+        } else if ((!strcmp(argv[i], "-hff") || !strcmp(argv[i], "--hf-file")) && i + 1 < argc) {
+            cparams.model.hf_file = argv[++i];
+        } else if ((!strcmp(argv[i], "-hft") || !strcmp(argv[i], "--hf-token")) && i + 1 < argc) {
+            cparams.hf_token = argv[++i];
+        } else if (!strcmp(argv[i], "--offline")) {
+            cparams.offline = true;
+        } else if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
+            backend_spec = argv[++i];
         } else if (!strcmp(argv[i], "--pp") && i + 1 < argc) {
             pp_list = argv[++i];
         } else if (!strcmp(argv[i], "--tg") && i + 1 < argc) {
@@ -222,6 +204,15 @@ int llama_tweak_record_main(int argc, char ** argv) {
             out_path = argv[++i];
         } else if (!strcmp(argv[i], "--runs") && i + 1 < argc) {
             runs = std::max(1, std::atoi(argv[++i]));
+        }
+    }
+
+    {
+        std::string err;
+        if (!resolve_tweak_model(cparams, model, err)) {
+            fprintf(stderr, "llama-tweak: %s\n", err.c_str());
+            usage();
+            return 1;
         }
     }
 
@@ -234,10 +225,6 @@ int llama_tweak_record_main(int argc, char ** argv) {
     }
 
     if (cmd == "explain") {
-        if (model.empty()) {
-            usage();
-            return 1;
-        }
         int pp = std::getenv("LLAMA_TWEAK_PP") ? std::atoi(std::getenv("LLAMA_TWEAK_PP")) : 512;
         int tg = std::getenv("LLAMA_TWEAK_TG") ? std::atoi(std::getenv("LLAMA_TWEAK_TG")) : 128;
         for (int j = 2; j < argc; ++j) {
@@ -259,7 +246,7 @@ int llama_tweak_record_main(int argc, char ** argv) {
         return 0;
     }
 
-    if (cmd != "record" || model.empty()) {
+    if (cmd != "record") {
         usage();
         return 1;
     }
@@ -273,46 +260,53 @@ int llama_tweak_record_main(int argc, char ** argv) {
 
     json doc = llama_tweak_load_or_empty(model);
 
+    const auto all_cfg = llama_tweak_enumerate_bench_configs();
+    const auto cases   = llama_tweak_filter_configs(all_cfg, backend_spec);
+    if (cases.empty()) {
+        fprintf(stderr, "llama-tweak: no matching --backend configs (run: llama-tweak show)\n");
+        return 1;
+    }
+
     for (int pp : pps) {
-        for (const auto & c : default_cases()) {
-                if (c.tag == "openvino_NPU_sf0") {
-                    double    probe = 0;
-                    tweak_case pc   = c;
-                    if (!run_bench_capture(model, 8, 0, pc, probe)) {
-                        fprintf(stderr, "skip %s (probe failed)\n", c.tag.c_str());
-                        continue;
-                    }
-                }
-                std::vector<double> samples;
-                fprintf(stderr, "=== %s pp=%d tg=%d (%d runs) ===\n", c.tag.c_str(), pp, tg, runs);
-                for (int r = 0; r < runs; ++r) {
-                    double tps = 0;
-                    if (!run_bench_capture(model, pp, tg, c, tps)) {
-                        fprintf(stderr, "  run %d: FAIL\n", r + 1);
-                        continue;
-                    }
-                    samples.push_back(tps);
-                    fprintf(stderr, "  run %d: %.2f tok/s\n", r + 1, tps);
-                }
-                if (samples.empty()) {
+        for (const auto & c : cases) {
+            if (c.backend_kind == "openvino" &&
+                (c.openvino_device == "NPU" || c.openvino_device.rfind("NPU", 0) == 0)) {
+                double probe = 0;
+                if (!run_bench_capture(model, 8, 0, c, probe)) {
+                    fprintf(stderr, "skip %s (NPU probe failed)\n", c.id.c_str());
                     continue;
                 }
-                json e;
-                e["tag"]                   = c.tag;
-                e["pp"]                    = pp;
-                e["tg"]                    = tg;
-                e["backend_kind"]          = c.backend_kind;
-                e["ggml_device"]           = c.backend_kind == "vulkan" ? c.vulkan_device : c.ggml_device;
-                e["openvino_device"]       = c.openvino_device;
-                e["openvino_stateful"]     = c.openvino_stateful;
-                e["openvino_phase_split"]    = c.openvino_phase_split;
-                e["openvino_prefill_device"] = c.openvino_prefill;
-                e["openvino_decode_device"]  = c.openvino_decode;
-                e["sycl_device_selector"]    = c.sycl_selector;
-                e["mean_tps"]              = mean_vec(samples);
-                e["stddev_tps"]            = stdev_vec(samples);
-                e["runs"]                  = (int) samples.size();
-                llama_tweak_merge_entry(doc, e);
+            }
+            std::vector<double> samples;
+            fprintf(stderr, "=== %s pp=%d tg=%d (%d runs) ===\n", c.id.c_str(), pp, tg, runs);
+            for (int r = 0; r < runs; ++r) {
+                double tps = 0;
+                if (!run_bench_capture(model, pp, tg, c, tps)) {
+                    fprintf(stderr, "  run %d: FAIL\n", r + 1);
+                    continue;
+                }
+                samples.push_back(tps);
+                fprintf(stderr, "  run %d: %.2f tok/s\n", r + 1, tps);
+            }
+            if (samples.empty()) {
+                continue;
+            }
+            json e;
+            e["tag"]                      = c.id;
+            e["pp"]                       = pp;
+            e["tg"]                       = tg;
+            e["backend_kind"]             = c.backend_kind;
+            e["ggml_device"]              = c.ggml_device;
+            e["openvino_device"]          = c.openvino_device;
+            e["openvino_stateful"]        = c.openvino_stateful;
+            e["openvino_phase_split"]     = false;
+            e["openvino_prefill_device"]  = "";
+            e["openvino_decode_device"]   = "";
+            e["sycl_device_selector"]     = "";
+            e["mean_tps"]                 = mean_vec(samples);
+            e["stddev_tps"]               = stdev_vec(samples);
+            e["runs"]                     = (int) samples.size();
+            llama_tweak_merge_entry(doc, e);
         }
     }
 
