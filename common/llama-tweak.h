@@ -12,7 +12,8 @@ struct llama_tweak_plan {
     std::string backend_kind;
     std::string openvino_device;
     int         openvino_stateful = 0;
-    std::string sycl_device_selector;
+    int         sycl_enable_graph = 0;
+    bool        sycl_native_graph = false;
     std::string selected_tag;
     double      expected_tps = 0.0;
     int         resolved_pp  = 0;

@@ -9,6 +9,8 @@ struct llama_tweak_bench_config {
     std::string ggml_device;
     std::string openvino_device;
     int         openvino_stateful = 0;
+    int         sycl_enable_graph = 0;
+    bool        sycl_native_graph = false;
     std::string display_line;
     std::string ov_cache_subdir;
 };

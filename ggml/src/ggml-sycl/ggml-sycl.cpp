@@ -6389,8 +6389,20 @@ bool ggml_backend_sycl_comm_allreduce_tensor(void * comm_ctx_v, struct ggml_tens
 catch (const sycl::exception &) { return false; }
 catch (...)                     { return false; }
 
+int ggml_sycl_graphs_compiled(void) {
+#ifdef GGML_SYCL_GRAPH
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 static void *ggml_backend_sycl_reg_get_proc_address(ggml_backend_reg_t reg, const char *name) {
     GGML_UNUSED(reg);
+
+    if (strcmp(name, "ggml_sycl_graphs_compiled") == 0) {
+        return (void *) ggml_sycl_graphs_compiled;
+    }
 
     if (strcmp(name, "ggml_backend_split_buffer_type") == 0) {
         return (void *)ggml_backend_sycl_split_buffer_type;

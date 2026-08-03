@@ -224,7 +224,8 @@ static json bench_entry_base(const llama_tweak_bench_config & c, int pp, int tg)
     e["ggml_device"]             = c.ggml_device;
     e["openvino_device"]         = c.openvino_device;
     e["openvino_stateful"]       = c.openvino_stateful;
-    e["sycl_device_selector"]    = "";
+    e["sycl_enable_graph"]       = c.sycl_enable_graph;
+    e["sycl_native_graph"]       = c.sycl_native_graph;
     return e;
 }
 

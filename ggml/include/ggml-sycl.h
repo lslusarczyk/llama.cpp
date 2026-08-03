@@ -44,6 +44,10 @@ GGML_BACKEND_API void ggml_backend_sycl_get_device_description(int device,
                                                        char *description,
                                                        size_t description_size);
 GGML_BACKEND_API int  ggml_backend_sycl_get_device_count();
+
+// Non-zero when ggml-sycl was built with GGML_SYCL_GRAPH (runtime still needs GGML_SYCL_ENABLE_GRAPH=1).
+GGML_BACKEND_API int  ggml_sycl_graphs_compiled(void);
+
 GGML_BACKEND_API void ggml_backend_sycl_get_device_memory(int device, size_t *free, size_t *total);
 
 // SYCL doesn't support registering host memory, keep here for reference

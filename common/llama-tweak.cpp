@@ -191,7 +191,8 @@ bool llama_tweak_resolve(const std::string & model_path, int pp, int tg, llama_t
     out.ggml_device    = best_e.value("ggml_device", "");
     out.openvino_device = best_e.value("openvino_device", "");
     out.openvino_stateful = best_e.value("openvino_stateful", 0);
-    out.sycl_device_selector    = best_e.value("sycl_device_selector", "");
+    out.sycl_enable_graph = best_e.value("sycl_enable_graph", 0);
+    out.sycl_native_graph = best_e.value("sycl_native_graph", false);
     return true;
 }
 
@@ -276,6 +277,8 @@ void llama_tweak_apply_env(const llama_tweak_plan & plan) {
     unsetenv("GGML_OPENVINO_DEVICE");
     unsetenv("GGML_OPENVINO_STATEFUL_EXECUTION");
     unsetenv("ONEAPI_DEVICE_SELECTOR");
+    unsetenv("GGML_SYCL_ENABLE_GRAPH");
+    unsetenv("SYCL_GRAPH_FORCE_NATIVE_RECORDING");
 
     if (plan.backend_kind == "openvino") {
         if (!plan.openvino_device.empty()) {
@@ -283,8 +286,11 @@ void llama_tweak_apply_env(const llama_tweak_plan & plan) {
         }
         setenv("GGML_OPENVINO_STATEFUL_EXECUTION", plan.openvino_stateful ? "1" : "0", 1);
     } else if (plan.backend_kind == "sycl") {
-        if (!plan.sycl_device_selector.empty()) {
-            setenv("ONEAPI_DEVICE_SELECTOR", plan.sycl_device_selector.c_str(), 1);
+        if (plan.sycl_enable_graph) {
+            setenv("GGML_SYCL_ENABLE_GRAPH", "1", 1);
+        }
+        if (plan.sycl_native_graph) {
+            setenv("SYCL_GRAPH_FORCE_NATIVE_RECORDING", "1", 1);
         }
     }
 }

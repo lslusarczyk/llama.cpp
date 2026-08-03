@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
-#include <sstream>
 #include <unordered_set>
 
 static std::string strip_copy(const std::string & s) {
@@ -117,11 +116,58 @@ static void append_openvino_devices(std::vector<llama_tweak_bench_config> & out)
     }
 }
 
+static bool sycl_graphs_compiled() {
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("SYCL");
+    if (!reg) {
+        return false;
+    }
+    typedef int (*ggml_sycl_graphs_compiled_fn)(void);
+    ggml_sycl_graphs_compiled_fn fn =
+        (ggml_sycl_graphs_compiled_fn) ggml_backend_reg_get_proc_address(reg, "ggml_sycl_graphs_compiled");
+    return fn && fn() != 0;
+}
+
+static void append_sycl_devices(std::vector<llama_tweak_bench_config> & out) {
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("SYCL");
+    if (!reg) {
+        return;
+    }
+    const bool graphs = sycl_graphs_compiled();
+    const size_t n    = ggml_backend_reg_dev_count(reg);
+    for (size_t i = 0; i < n; i++) {
+        ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, i);
+        if (!dev) {
+            continue;
+        }
+        const std::string ggml_dev = ggml_backend_dev_name(dev);
+        const std::string desc     = ggml_backend_dev_description(dev);
+        const std::string prefix   = "sycl" + std::to_string(i);
+
+        auto add = [&](const std::string & id_suffix, int enable_graph, bool native_graph, const std::string & label) {
+            llama_tweak_bench_config c;
+            c.backend_kind       = "sycl";
+            c.id                 = prefix + id_suffix;
+            c.ggml_device        = ggml_dev;
+            c.sycl_enable_graph  = enable_graph;
+            c.sycl_native_graph  = native_graph;
+            c.display_line       = c.id + ": " + desc + label;
+            c.ov_cache_subdir    = c.id;
+            out.push_back(std::move(c));
+        };
+
+        add("", 0, false, "");
+        if (graphs) {
+            add("_graph", 1, false, " (SYCL graph, GGML_SYCL_ENABLE_GRAPH=1)");
+            add("_nativegraph", 1, true, " (SYCL graph native, GGML_SYCL_ENABLE_GRAPH=1, SYCL_GRAPH_FORCE_NATIVE_RECORDING=1)");
+        }
+    }
+}
+
 std::vector<llama_tweak_bench_config> llama_tweak_enumerate_bench_configs() {
     std::vector<llama_tweak_bench_config> out;
     append_ggml_devices("Vulkan", "vulkan", out);
     append_openvino_devices(out);
-    append_ggml_devices("SYCL", "sycl", out);
+    append_sycl_devices(out);
     return out;
 }
 
@@ -170,6 +216,8 @@ void llama_tweak_bench_config_env(const llama_tweak_bench_config & c, int pp, in
         "GGML_OPENVINO_DEVICE",
         "GGML_OPENVINO_STATEFUL_EXECUTION",
         "ONEAPI_DEVICE_SELECTOR",
+        "GGML_SYCL_ENABLE_GRAPH",
+        "SYCL_GRAPH_FORCE_NATIVE_RECORDING",
     };
     out.set_vars.clear();
 
@@ -182,6 +230,13 @@ void llama_tweak_bench_config_env(const llama_tweak_bench_config & c, int pp, in
             out.set_vars.emplace_back("GGML_OPENVINO_DEVICE", c.openvino_device);
         }
         out.set_vars.emplace_back("GGML_OPENVINO_STATEFUL_EXECUTION", c.openvino_stateful ? "1" : "0");
+    } else if (c.backend_kind == "sycl") {
+        if (c.sycl_enable_graph) {
+            out.set_vars.emplace_back("GGML_SYCL_ENABLE_GRAPH", "1");
+        }
+        if (c.sycl_native_graph) {
+            out.set_vars.emplace_back("SYCL_GRAPH_FORCE_NATIVE_RECORDING", "1");
+        }
     }
 }
 
