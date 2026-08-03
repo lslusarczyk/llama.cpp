@@ -26,7 +26,7 @@ The cache stores a model fingerprint (size + mtime). Re-run `record` after the G
 llama-tweak show
 ```
 
-Lists Vulkan / OpenVINO / SYCL devices detected in this build and the config ids used by `record` (e.g. `vulkan0`, `openvino1_sf`, `sycl0`). OpenVINO GPU entries are stateful-only (`_sf`). Phase-split configs are not included yet.
+Lists Vulkan / OpenVINO / SYCL devices detected in this build and the config ids used by `record` (e.g. `vulkan0`, `openvino1`, `openvino1_sf`, `sycl0`). Phase-split configs are not included yet.
 
 ## Record (tuning)
 

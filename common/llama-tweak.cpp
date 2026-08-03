@@ -10,7 +10,6 @@
 #include <mutex>
 #include <set>
 #include <sys/stat.h>
-#include <cmath>
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
@@ -208,9 +207,19 @@ void llama_tweak_apply_env(const llama_tweak_plan & plan) {
 bool llama_tweak_save_cache_file(const std::string & model_path, const json & doc) {
     const std::string path = llama_tweak_json_path_for_model(model_path);
     try {
-        fs::create_directories(fs::path(path).parent_path());
+        const fs::path p(path);
+        const fs::path parent = p.parent_path();
+        if (!parent.empty()) {
+            fs::create_directories(parent);
+        }
         std::ofstream out(path);
+        if (!out) {
+            return false;
+        }
         out << doc.dump(2) << "\n";
+        if (!out.good()) {
+            return false;
+        }
     } catch (...) {
         return false;
     }

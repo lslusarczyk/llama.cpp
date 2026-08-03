@@ -429,7 +429,10 @@ int llama_tweak_record_main(int argc, char ** argv) {
     }
 
     if (!llama_tweak_save_cache_file(model, doc)) {
-        fprintf(stderr, "failed to write %s\n", llama_tweak_json_path_for_model(model).c_str());
+        const std::string path = llama_tweak_json_path_for_model(model);
+        fprintf(stderr,
+                "failed to write %s (check that the directory exists and is writable; use --output with a full path if needed)\n",
+                path.c_str());
         return 1;
     }
     fprintf(stderr, "wrote %s\n", llama_tweak_json_path_for_model(model).c_str());

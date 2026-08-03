@@ -59,10 +59,6 @@ static bool openvino_is_npu(const std::string & ov_dev) {
     return ov_dev == "NPU" || ov_dev.rfind("NPU", 0) == 0;
 }
 
-static bool openvino_is_gpu(const std::string & ov_dev) {
-    return ov_dev == "GPU" || ov_dev.rfind("GPU.", 0) == 0;
-}
-
 static void append_openvino_devices(std::vector<llama_tweak_bench_config> & out) {
     if (!reg_available(GGML_OPENVINO_NAME)) {
         return;
@@ -114,8 +110,6 @@ static void append_openvino_devices(std::vector<llama_tweak_bench_config> & out)
 
         if (npu) {
             add_variant("", 0);
-        } else if (openvino_is_gpu(ov_name)) {
-            add_variant("_sf", 1);
         } else {
             add_variant("", 0);
             add_variant("_sf", 1);
