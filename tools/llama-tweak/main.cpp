@@ -22,8 +22,5 @@ int main(int argc, char ** argv) {
         ggml_backend_load_all();
         return llama_tweak_show_main(argc, argv);
     }
-    if (strcmp(argv[1], "record") == 0) {
-        ggml_backend_load_all();
-    }
     return llama_tweak_record_main(argc, argv);
 }

@@ -30,6 +30,9 @@ Lists Vulkan / OpenVINO / SYCL devices detected in this build and the config ids
 
 ## Record (tuning)
 
+`record` runs **llama-bench in a subprocess** per backend and run (binary next to `llama-tweak`, or `LLAMA_BENCH`).  
+It prints a **replay** shell line (env vars + command) before each run. OpenVINO configs set `GGML_OPENVINO_*` in the child so GPU ids such as `openvino2` use the matching `GPU.N` device.
+
 ```bash
 cd /path/where/you/want/cache
 llama-tweak record -m /path/model.gguf \

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <sstream>
 #include <unordered_set>
 
 static std::string strip_copy(const std::string & s) {
@@ -149,22 +150,67 @@ std::vector<llama_tweak_bench_config> llama_tweak_filter_configs(
     return filtered;
 }
 
-void llama_tweak_apply_bench_config_env(const llama_tweak_bench_config & c, int pp, int tg) {
-    unsetenv("GGML_OPENVINO_PHASE_SPLIT");
-    unsetenv("GGML_OPENVINO_PREFILL_DEVICE");
-    unsetenv("GGML_OPENVINO_DECODE_DEVICE");
-    unsetenv("GGML_OPENVINO_DEVICE");
-    unsetenv("GGML_OPENVINO_STATEFUL_EXECUTION");
-    unsetenv("ONEAPI_DEVICE_SELECTOR");
+static std::string shell_quote(const std::string & s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') {
+            out += "'\\''";
+        } else {
+            out += c;
+        }
+    }
+    out += "'";
+    return out;
+}
+
+void llama_tweak_bench_config_env(const llama_tweak_bench_config & c, int pp, int tg, llama_tweak_bench_env & out) {
+    out.unset_vars = {
+        "GGML_OPENVINO_PHASE_SPLIT",
+        "GGML_OPENVINO_PREFILL_DEVICE",
+        "GGML_OPENVINO_DECODE_DEVICE",
+        "GGML_OPENVINO_DEVICE",
+        "GGML_OPENVINO_STATEFUL_EXECUTION",
+        "ONEAPI_DEVICE_SELECTOR",
+    };
+    out.set_vars.clear();
 
     const std::string cache =
         "/tmp/llama_tweak_bench/" + c.ov_cache_subdir + "_" + std::to_string(pp) + "_" + std::to_string(tg);
-    setenv("GGML_OPENVINO_CACHE_DIR", cache.c_str(), 1);
+    out.set_vars.emplace_back("GGML_OPENVINO_CACHE_DIR", cache);
 
     if (c.backend_kind == "openvino") {
         if (!c.openvino_device.empty()) {
-            setenv("GGML_OPENVINO_DEVICE", c.openvino_device.c_str(), 1);
+            out.set_vars.emplace_back("GGML_OPENVINO_DEVICE", c.openvino_device);
         }
-        setenv("GGML_OPENVINO_STATEFUL_EXECUTION", c.openvino_stateful ? "1" : "0", 1);
+        out.set_vars.emplace_back("GGML_OPENVINO_STATEFUL_EXECUTION", c.openvino_stateful ? "1" : "0");
     }
+}
+
+void llama_tweak_apply_bench_config_env(const llama_tweak_bench_config & c, int pp, int tg) {
+    llama_tweak_bench_env env;
+    llama_tweak_bench_config_env(c, pp, tg, env);
+    for (const auto & u : env.unset_vars) {
+        unsetenv(u.c_str());
+    }
+    for (const auto & kv : env.set_vars) {
+        setenv(kv.first.c_str(), kv.second.c_str(), 1);
+    }
+}
+
+std::string llama_tweak_format_bench_shell_command(
+    const std::string &              llama_bench_path,
+    const llama_tweak_bench_env &    env,
+    const std::vector<std::string> & llama_bench_args) {
+    std::ostringstream cmd;
+    for (const auto & u : env.unset_vars) {
+        cmd << "env -u " << u << " ";
+    }
+    for (const auto & kv : env.set_vars) {
+        cmd << kv.first << "=" << shell_quote(kv.second) << " ";
+    }
+    cmd << shell_quote(llama_bench_path);
+    for (const auto & a : llama_bench_args) {
+        cmd << " " << shell_quote(a);
+    }
+    return cmd.str();
 }

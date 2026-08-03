@@ -4,7 +4,6 @@
 #include "arg.h"
 #include "common.h"
 #include "ggml-backend.h"
-#include "llama-bench-api.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -13,66 +12,54 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits.h>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
 using json     = nlohmann::ordered_json;
 
-static bool run_bench_capture(const std::string & model, int pp, int tg, const llama_tweak_bench_config & c,
-                              double & out_tps) {
-    llama_tweak_apply_bench_config_env(c, pp, tg);
+static constexpr size_t k_bench_log_max = 256 * 1024;
 
-    const std::string dev = c.ggml_device;
-
-    std::vector<std::string> args_s = {
-        "llama-bench", "-m", model, "-r", "1", "--no-warmup", "-p", "0", "-n", "0",
-        "-pg", std::to_string(pp) + "," + std::to_string(tg), "-o", "jsonl", "--device", dev, "-ngl", "999"};
-    std::vector<char *> argv;
-    for (auto & s : args_s) {
-        argv.push_back(s.data());
-    }
-    argv.push_back(nullptr);
-
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        return false;
-    }
-
-    FILE * orig_out = stdout;
-    fflush(stdout);
-    stdout = fdopen(pipefd[1], "w");
-    if (!stdout) {
-        close(pipefd[0]);
-        close(pipefd[1]);
-        stdout = orig_out;
-        return false;
-    }
-
-    const int rc = llama_bench((int) argv.size() - 1, argv.data());
-    fflush(stdout);
-    fclose(stdout);
-    stdout = orig_out;
-
-    std::string line;
-    {
-        char    chunk[4096];
-        ssize_t n;
-        while ((n = read(pipefd[0], chunk, sizeof(chunk))) > 0) {
-            line.append(chunk, (size_t) n);
+static std::string resolve_llama_bench_path() {
+    if (const char * env = std::getenv("LLAMA_BENCH")) {
+        if (env[0] != '\0' && access(env, X_OK) == 0) {
+            return env;
         }
     }
-    close(pipefd[0]);
-
-    if (rc != 0) {
-        return false;
+    char self[PATH_MAX];
+    const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n > 0) {
+        self[n] = '\0';
+        const fs::path candidate = fs::path(self).parent_path() / "llama-bench";
+        if (access(candidate.c_str(), X_OK) == 0) {
+            return candidate.string();
+        }
     }
+    return "llama-bench";
+}
 
+static std::vector<std::string> bench_argv(const std::string & model, int pp, int tg, const std::string & dev) {
+    return {
+        "-m", model, "-r", "1", "--no-warmup", "-p", "0", "-n", "0",
+        "-pg", std::to_string(pp) + "," + std::to_string(tg), "-o", "jsonl", "--device", dev, "-ngl", "999"};
+}
+
+struct bench_run_result {
+    bool        ok = false;
+    double      tps = 0.0;
+    int         exit_code = -1;
+    std::string log;
+    std::string replay_cmd;
+};
+
+static bool parse_bench_jsonl(const std::string & output, const std::string & model, int pp, int tg, double & out_tps) {
     const fs::path model_base = fs::path(model).filename();
 
-    std::istringstream stream(line);
+    std::istringstream stream(output);
     std::string        one;
     while (std::getline(stream, one)) {
         const auto pos = one.find('{');
@@ -99,6 +86,98 @@ static bool run_bench_capture(const std::string & model, int pp, int tg, const l
         }
     }
     return false;
+}
+
+static bench_run_result run_bench_subprocess(
+    const std::string &              llama_bench_path,
+    const std::string &              model,
+    int                              pp,
+    int                              tg,
+    const llama_tweak_bench_config & c) {
+    bench_run_result result;
+
+    llama_tweak_bench_env env;
+    llama_tweak_bench_config_env(c, pp, tg, env);
+
+    const auto args_s = bench_argv(model, pp, tg, c.ggml_device);
+    result.replay_cmd = llama_tweak_format_bench_shell_command(llama_bench_path, env, args_s);
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        result.log = "llama-tweak: pipe() failed\n";
+        return result;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        result.log = "llama-tweak: fork() failed\n";
+        return result;
+    }
+
+    if (pid == 0) {
+        close(pipefd[0]);
+        for (const auto & u : env.unset_vars) {
+            unsetenv(u.c_str());
+        }
+        for (const auto & kv : env.set_vars) {
+            setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        }
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+
+        std::vector<std::string> storage;
+        storage.push_back(llama_bench_path);
+        for (const auto & a : args_s) {
+            storage.push_back(a);
+        }
+        std::vector<char *> argv;
+        for (auto & s : storage) {
+            argv.push_back(s.data());
+        }
+        argv.push_back(nullptr);
+
+        execv(llama_bench_path.c_str(), argv.data());
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+    result.log.reserve(4096);
+    char chunk[4096];
+    while (result.log.size() < k_bench_log_max) {
+        const ssize_t n = read(pipefd[0], chunk, sizeof(chunk));
+        if (n <= 0) {
+            break;
+        }
+        result.log.append(chunk, (size_t) n);
+    }
+    close(pipefd[0]);
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        result.log += "\nllama-tweak: waitpid() failed\n";
+        return result;
+    }
+
+    if (WIFEXITED(status)) {
+        result.exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result.exit_code = 128 + WTERMSIG(status);
+        result.log += "\nllama-tweak: llama-bench terminated by signal " + std::to_string(WTERMSIG(status)) + "\n";
+    }
+
+    if (result.log.size() >= k_bench_log_max) {
+        result.log += "\n... (log truncated)\n";
+    }
+
+    if (result.exit_code != 0) {
+        return result;
+    }
+
+    result.ok = parse_bench_jsonl(result.log, model, pp, tg, result.tps);
+    return result;
 }
 
 static void parse_pg_list(const char * s, std::vector<int> & out) {
@@ -167,6 +246,20 @@ static bool resolve_tweak_model(common_params & params, std::string & model_path
     }
     model_path = params.model.path;
     return true;
+}
+
+static void print_backend_failure(const std::string & config_id, int pp, int tg, const bench_run_result & run) {
+    fprintf(stderr, "llama-tweak: backend %s failed for pp=%d tg=%d", config_id.c_str(), pp, tg);
+    if (run.exit_code >= 0) {
+        fprintf(stderr, " (exit %d)", run.exit_code);
+    }
+    fprintf(stderr, "; skipping this run\n");
+    if (!run.log.empty()) {
+        fprintf(stderr, "llama-bench log:\n%s", run.log.c_str());
+        if (run.log.back() != '\n') {
+            fprintf(stderr, "\n");
+        }
+    }
 }
 
 int llama_tweak_record_main(int argc, char ** argv) {
@@ -251,6 +344,14 @@ int llama_tweak_record_main(int argc, char ** argv) {
         return 1;
     }
 
+    const std::string llama_bench_path = resolve_llama_bench_path();
+    if (llama_bench_path != "llama-bench" && access(llama_bench_path.c_str(), X_OK) != 0) {
+        fprintf(stderr, "llama-tweak: llama-bench not found at %s (set LLAMA_BENCH or build llama-bench next to llama-tweak)\n",
+                llama_bench_path.c_str());
+        return 1;
+    }
+    fprintf(stderr, "llama-tweak: using llama-bench at %s\n", llama_bench_path.c_str());
+
     std::vector<int> pps;
     parse_pg_list(pp_list.c_str(), pps);
     const int tg = std::max(0, std::atoi(tg_val.c_str()));
@@ -260,6 +361,7 @@ int llama_tweak_record_main(int argc, char ** argv) {
 
     json doc = llama_tweak_load_or_empty(model);
 
+    ggml_backend_load_all();
     const auto all_cfg = llama_tweak_enumerate_bench_configs();
     const auto cases   = llama_tweak_filter_configs(all_cfg, backend_spec);
     if (cases.empty()) {
@@ -271,24 +373,40 @@ int llama_tweak_record_main(int argc, char ** argv) {
         for (const auto & c : cases) {
             if (c.backend_kind == "openvino" &&
                 (c.openvino_device == "NPU" || c.openvino_device.rfind("NPU", 0) == 0)) {
-                double probe = 0;
-                if (!run_bench_capture(model, 8, 0, c, probe)) {
+                fprintf(stderr, "=== NPU probe %s ===\n", c.id.c_str());
+                const bench_run_result probe = run_bench_subprocess(llama_bench_path, model, 8, 0, c);
+                fprintf(stderr, "replay:\n  %s\n", probe.replay_cmd.c_str());
+                if (!probe.ok) {
                     fprintf(stderr, "skip %s (NPU probe failed)\n", c.id.c_str());
+                    print_backend_failure(c.id, 8, 0, probe);
                     continue;
                 }
             }
             std::vector<double> samples;
             fprintf(stderr, "=== %s pp=%d tg=%d (%d runs) ===\n", c.id.c_str(), pp, tg, runs);
+            bench_run_result last_fail;
+            bool             have_fail = false;
             for (int r = 0; r < runs; ++r) {
-                double tps = 0;
-                if (!run_bench_capture(model, pp, tg, c, tps)) {
+                const bench_run_result run = run_bench_subprocess(llama_bench_path, model, pp, tg, c);
+                fprintf(stderr, "replay:\n  %s\n", run.replay_cmd.c_str());
+                if (!run.ok) {
                     fprintf(stderr, "  run %d: FAIL\n", r + 1);
+                    last_fail = run;
+                    have_fail = true;
                     continue;
                 }
-                samples.push_back(tps);
-                fprintf(stderr, "  run %d: %.2f tok/s\n", r + 1, tps);
+                samples.push_back(run.tps);
+                fprintf(stderr, "  run %d: %.2f tok/s\n", r + 1, run.tps);
             }
             if (samples.empty()) {
+                fprintf(stderr, "llama-tweak: no cache entry for %s pp=%d tg=%d (backend unavailable)\n", c.id.c_str(), pp,
+                        tg);
+                if (have_fail) {
+                    print_backend_failure(c.id, pp, tg, last_fail);
+                }
+                if (have_fail && !last_fail.replay_cmd.empty()) {
+                    fprintf(stderr, "last replay:\n  %s\n", last_fail.replay_cmd.c_str());
+                }
                 continue;
             }
             json e;
