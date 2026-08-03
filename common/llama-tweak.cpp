@@ -191,9 +191,6 @@ bool llama_tweak_resolve(const std::string & model_path, int pp, int tg, llama_t
     out.ggml_device    = best_e.value("ggml_device", "");
     out.openvino_device = best_e.value("openvino_device", "");
     out.openvino_stateful = best_e.value("openvino_stateful", 0);
-    out.openvino_phase_split = best_e.value("openvino_phase_split", false);
-    out.openvino_prefill_device = best_e.value("openvino_prefill_device", "");
-    out.openvino_decode_device  = best_e.value("openvino_decode_device", "");
     out.sycl_device_selector    = best_e.value("sycl_device_selector", "");
     return true;
 }
@@ -276,23 +273,11 @@ bool llama_tweak_explain(const std::string & model_path, int pp, int tg) {
 }
 
 void llama_tweak_apply_env(const llama_tweak_plan & plan) {
-    unsetenv("GGML_OPENVINO_PHASE_SPLIT");
-    unsetenv("GGML_OPENVINO_PREFILL_DEVICE");
-    unsetenv("GGML_OPENVINO_DECODE_DEVICE");
     unsetenv("GGML_OPENVINO_DEVICE");
     unsetenv("GGML_OPENVINO_STATEFUL_EXECUTION");
     unsetenv("ONEAPI_DEVICE_SELECTOR");
 
     if (plan.backend_kind == "openvino") {
-        if (plan.openvino_phase_split) {
-            setenv("GGML_OPENVINO_PHASE_SPLIT", "1", 1);
-            if (!plan.openvino_prefill_device.empty()) {
-                setenv("GGML_OPENVINO_PREFILL_DEVICE", plan.openvino_prefill_device.c_str(), 1);
-            }
-            if (!plan.openvino_decode_device.empty()) {
-                setenv("GGML_OPENVINO_DECODE_DEVICE", plan.openvino_decode_device.c_str(), 1);
-            }
-        }
         if (!plan.openvino_device.empty()) {
             setenv("GGML_OPENVINO_DEVICE", plan.openvino_device.c_str(), 1);
         }

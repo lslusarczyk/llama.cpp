@@ -38,7 +38,6 @@ typedef struct ggml_openvino_device_info {
     char description[GGML_OPENVINO_DEVICE_INFO_DESC_LEN];
 } ggml_openvino_device_info;
 
-// Lists OpenVINO runtime devices (CPU, GPU.0, NPU, ...). Returns count written (<= max_count).
 GGML_BACKEND_API int ggml_openvino_list_devices(ggml_openvino_device_info * infos, int max_count);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_openvino_reg(void);

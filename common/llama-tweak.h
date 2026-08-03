@@ -12,9 +12,6 @@ struct llama_tweak_plan {
     std::string backend_kind;
     std::string openvino_device;
     int         openvino_stateful = 0;
-    bool        openvino_phase_split = false;
-    std::string openvino_prefill_device;
-    std::string openvino_decode_device;
     std::string sycl_device_selector;
     std::string selected_tag;
     double      expected_tps = 0.0;

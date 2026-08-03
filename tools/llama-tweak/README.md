@@ -88,8 +88,6 @@ llama-cli -m /path/model.gguf --device tweak ...
 
 Or set `LLAMA_TWEAK=1` and configure devices via the cache (still requires `--device tweak` or tweak routing flag).
 
-OpenVINO phase-split plans set `GGML_OPENVINO_PHASE_SPLIT`, prefill/decode devices, and stateful flags before the backend initializes.
-
 ## JSON schema (version 1)
 
 Top-level: `schema_version`, `model_path`, `model_fingerprint`, `entries[]`.

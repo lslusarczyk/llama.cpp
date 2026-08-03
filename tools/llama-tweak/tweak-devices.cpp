@@ -167,9 +167,6 @@ static std::string shell_quote(const std::string & s) {
 
 void llama_tweak_bench_config_env(const llama_tweak_bench_config & c, int pp, int tg, llama_tweak_bench_env & out) {
     out.unset_vars = {
-        "GGML_OPENVINO_PHASE_SPLIT",
-        "GGML_OPENVINO_PREFILL_DEVICE",
-        "GGML_OPENVINO_DECODE_DEVICE",
         "GGML_OPENVINO_DEVICE",
         "GGML_OPENVINO_STATEFUL_EXECUTION",
         "ONEAPI_DEVICE_SELECTOR",

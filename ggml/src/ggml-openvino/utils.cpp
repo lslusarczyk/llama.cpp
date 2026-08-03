@@ -2,7 +2,6 @@
 
 #include "ggml-impl.h"
 #include "ggml-openvino-extra.h"
-#include "ggml-openvino-phase-tune.h"
 #include "ggml-openvino/ggml-decoder.h"
 #include "ggml.h"
 #include "openvino/frontend.h"
@@ -167,27 +166,13 @@ ov::Tensor create_ov_output_tensor(std::shared_ptr<GgmlOvDecoder> ggml_decoder,
 enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<ov_runtime_context> r_ctx) {
     auto & core = ov_singleton_core();
     const auto & config = ggml_openvino_get_compile_config();
-    const auto & default_device = r_ctx->device;
-    const bool phase_split = ggml_openvino_phase_split_enabled();
+    const auto & device = r_ctx->device;
+    const auto & stateful = r_ctx->stateful;
     static auto is_static = false;
-
-    bool is_prefill = false;
-    std::string active_device = default_device;
-    if (phase_split) {
-        const auto * inp_pos = get_inp_pos_tensor(cgraph);
-        is_prefill = get_is_prefill(inp_pos);
-        if (ggml_openvino_phase_tune_enabled() && !ggml_openvino_phase_tune_in_production()) {
-            return ov_graph_compute_phase_tune(cgraph, r_ctx);
-        }
-        active_device = is_prefill ? ggml_openvino_get_prefill_device() : ggml_openvino_get_decode_device();
-    }
-
-    const bool use_stateful = r_ctx->stateful && !is_prefill && ggml_openvino_device_is_gpu(active_device) &&
-                              !(phase_split && ggml_openvino_get_prefill_device() != ggml_openvino_get_decode_device());
 
     if (is_naive(cgraph)) {
         if (!is_model_splitted(cgraph)) {
-            return naive_compute(cgraph, core, active_device, config);
+            return naive_compute(cgraph, core, device, config);
         }
     }
 
@@ -200,9 +185,6 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
     std::tie(m_params, c_params) = GgmlOvDecoder::compute_llm_params(cgraph, is_static);
 
     graph_key key(cgraph);
-    if (phase_split) {
-        key.last_node_name += is_prefill ? ":ov_pp" : ":ov_tg";
-    }
     static const bool cache_enabled = !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_CACHE");
     bool cache_hit = false;
 
@@ -256,17 +238,12 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
             ggml_decoder->add_extra_inputs();
             {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
-                if (phase_split) {
-                    infer_request = is_prefill ? r_ctx->infer_request_cache_prefill.at(key) :
-                                                 r_ctx->infer_request_cache.at(key);
-                } else {
-                    infer_request = r_ctx->infer_request_cache.at(key);
-                }
+                infer_request = r_ctx->infer_request_cache.at(key);
                 ov_input_names = r_ctx->ov_input_names_cache.at(key);
                 ov_output_names = r_ctx->ov_output_names_cache.at(key);
             }
 
-            if (use_stateful) {
+            if (stateful) {
                 const auto * inp_pos = get_inp_pos_tensor(cgraph);
                 int32_t * pos_data = (int32_t *) inp_pos->data;
                 auto pos_shape = ggml_decoder->get_shape(inp_pos);
@@ -312,7 +289,6 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
             if (cache_enabled) {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
                 r_ctx->infer_request_cache.erase(key);
-                r_ctx->infer_request_cache_prefill.erase(key);
             }
             bool model_is_splitted = is_model_splitted(cgraph);
 
@@ -320,7 +296,7 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
             auto model_weights = GgmlOvDecoder::create_weight_nodes(cgraph);
 
             ggml_decoder = std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params, model_weights, is_static,
-                                                           use_stateful, model_is_splitted, is_prefill);
+                                                           stateful, model_is_splitted);
             decoder_end_time = ggml_time_us();
 
             auto input_model = std::make_shared<ov::frontend::ggml::InputModel>(ggml_decoder);
@@ -337,12 +313,10 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
 
             ov::CompiledModel compiled_model;
             auto remote_context = ggml_openvino_get_remote_context();
-            const bool compile_via_remote = remote_context.has_value() && ggml_openvino_device_is_gpu(active_device) &&
-                                            phase_split;
-            if (compile_via_remote) {
+            if (remote_context.has_value()) {
                 compiled_model = core.compile_model(model, remote_context.value(), config);
             } else {
-                compiled_model = core.compile_model(model, active_device, config);
+                compiled_model = core.compile_model(model, device, config);
             }
             compile_end_time = ggml_time_us();
             infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
@@ -357,20 +331,12 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
 
             if (cache_enabled) {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
-                if (phase_split) {
-                    if (is_prefill) {
-                        r_ctx->infer_request_cache_prefill[key] = infer_request;
-                    } else {
-                        r_ctx->infer_request_cache[key] = infer_request;
-                    }
-                } else {
-                    r_ctx->infer_request_cache[key] = infer_request;
-                }
+                r_ctx->infer_request_cache[key] = infer_request;
                 r_ctx->ov_input_names_cache[key] = ov_input_names;
                 r_ctx->ov_output_names_cache[key] = ov_output_names;
             }
 
-            if (use_stateful && cache_enabled) {
+            if (stateful && cache_enabled) {
                 const auto * inp_pos = get_inp_pos_tensor(cgraph);
                 auto pos_shape = ggml_decoder->get_shape(inp_pos);
                 r_ctx->stateful_kv_size = pos_shape[3];
@@ -379,16 +345,6 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, std::shared_ptr<
                     r_ctx->kv_state_input_name_map[pair.first + pair.second] = pair.first;
                 }
             }
-        }
-
-        if (phase_split) {
-            static thread_local std::string prev_active_device;
-            if (ggml_openvino_device_is_gpu(prev_active_device) && !ggml_openvino_device_is_gpu(active_device)) {
-                if (cl_command_queue queue = ggml_openvino_get_cl_queue()) {
-                    clFinish(queue);
-                }
-            }
-            prev_active_device = active_device;
         }
 
         for (size_t i = 0; i < ov_input_names.size(); i++) {
