@@ -59,8 +59,8 @@ Optional env (same as inference):
 llama-tweak explain -m /path/model.gguf --pp 512 --tg 128
 ```
 
-Uses nearest cached `pp` / `tg` if the exact pair was not recorded.  
-Runtime uses the same resolution via `LLAMA_TWEAK_PP` / `LLAMA_TWEAK_TG` (defaults `512` / `128`).
+Uses nearest cached `pp` / `tg` if the exact pair was not recorded. Lists successful backends by `mean_tps` (with `stddev_tps` when `runs` > 1), then failed entries (`status: failed`) at the end.  
+Runtime uses the same resolution via `LLAMA_TWEAK_PP` / `LLAMA_TWEAK_TG` (defaults `512` / `128`) and ignores failed entries.
 
 ## Verify with llama-bench
 
@@ -94,8 +94,8 @@ OpenVINO phase-split plans set `GGML_OPENVINO_PHASE_SPLIT`, prefill/decode devic
 
 Top-level: `schema_version`, `model_path`, `model_fingerprint`, `entries[]`.
 
-Each entry: `tag`, `pp`, `tg`, `backend_kind`, `ggml_device`, backend-specific fields, `mean_tps`, `stddev_tps`, `runs`.
+Each entry: `tag`, `pp`, `tg`, `backend_kind`, `ggml_device`, backend-specific fields, `status` (`ok` or `failed`). Successful entries: `mean_tps`, `runs`, and `stddev_tps` when `runs` > 1. Failed entries: `attempted_runs`, optional `exit_code` (no `mean_tps`).
 
-Selection rule today: for requested `(pp, tg)`, pick nearest cached `pp`, then nearest `tg`, then the entry with highest `mean_tps`.
+Selection rule today: for requested `(pp, tg)`, pick nearest cached `pp`, then nearest `tg`, then the `ok` entry with highest `mean_tps` (failed entries are skipped).
 
 See [TODO.md](TODO.md) for planned metrics, backend filters, and vendor hooks.

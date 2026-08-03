@@ -4,6 +4,9 @@
 #include "log.h"
 #include "nlohmann/json.hpp"
 
+#include <algorithm>
+#include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -110,6 +113,39 @@ static int nearest_value(int req, const std::set<int> & values) {
     return best;
 }
 
+static bool entry_is_failed(const json & e) {
+    return e.value("status", "") == "failed";
+}
+
+static bool entry_has_mean_tps(const json & e) {
+    return e.contains("mean_tps") && e["mean_tps"].is_number();
+}
+
+static bool resolve_pp_tg_bucket(const json & entries, int pp, int tg, int & pp_use, int & tg_use) {
+    std::set<int> pps;
+    for (const auto & e : entries) {
+        pps.insert(e.value("pp", -1));
+    }
+    pps.erase(-1);
+    if (pps.empty()) {
+        return false;
+    }
+    pp_use = nearest_value(pp, pps);
+
+    std::set<int> tgs;
+    for (const auto & e : entries) {
+        if (e.value("pp", -1) == pp_use) {
+            tgs.insert(e.value("tg", -1));
+        }
+    }
+    tgs.erase(-1);
+    if (tgs.empty()) {
+        return false;
+    }
+    tg_use = nearest_value(tg, tgs);
+    return true;
+}
+
 bool llama_tweak_resolve(const std::string & model_path, int pp, int tg, llama_tweak_plan & out) {
     std::lock_guard<std::mutex> lock(g_mu);
     if (!load_cache_locked(model_path)) {
@@ -119,34 +155,21 @@ bool llama_tweak_resolve(const std::string & model_path, int pp, int tg, llama_t
         return false;
     }
 
-    std::set<int> pps;
-    for (const auto & e : g_cache_mem["entries"]) {
-        pps.insert(e.value("pp", -1));
-    }
-    pps.erase(-1);
-    if (pps.empty()) {
+    const auto & entries = g_cache_mem["entries"];
+    int          pp_use  = 0;
+    int          tg_use  = 0;
+    if (!resolve_pp_tg_bucket(entries, pp, tg, pp_use, tg_use)) {
         return false;
     }
-
-    const int pp_use = nearest_value(pp, pps);
-
-    std::set<int> tgs;
-    for (const auto & e : g_cache_mem["entries"]) {
-        if (e.value("pp", -1) == pp_use) {
-            tgs.insert(e.value("tg", -1));
-        }
-    }
-    tgs.erase(-1);
-    if (tgs.empty()) {
-        return false;
-    }
-    const int tg_use = nearest_value(tg, tgs);
 
     double best = -1.0;
     json   best_e;
 
-    for (const auto & e : g_cache_mem["entries"]) {
+    for (const auto & e : entries) {
         if (e.value("pp", -1) != pp_use || e.value("tg", -1) != tg_use) {
+            continue;
+        }
+        if (entry_is_failed(e) || !entry_has_mean_tps(e)) {
             continue;
         }
         const double m = e.value("mean_tps", 0.0);
@@ -172,6 +195,83 @@ bool llama_tweak_resolve(const std::string & model_path, int pp, int tg, llama_t
     out.openvino_prefill_device = best_e.value("openvino_prefill_device", "");
     out.openvino_decode_device  = best_e.value("openvino_decode_device", "");
     out.sycl_device_selector    = best_e.value("sycl_device_selector", "");
+    return true;
+}
+
+bool llama_tweak_explain(const std::string & model_path, int pp, int tg) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (!load_cache_locked(model_path)) {
+        return false;
+    }
+    if (!g_cache_mem.contains("entries") || !g_cache_mem["entries"].is_array()) {
+        return false;
+    }
+
+    const auto & entries = g_cache_mem["entries"];
+    int          pp_use  = 0;
+    int          tg_use  = 0;
+    if (!resolve_pp_tg_bucket(entries, pp, tg, pp_use, tg_use)) {
+        return false;
+    }
+
+    struct ranked_ok {
+        double mean;
+        json   e;
+    };
+    std::vector<ranked_ok> ok;
+    std::vector<json>      failed;
+
+    for (const auto & e : entries) {
+        if (e.value("pp", -1) != pp_use || e.value("tg", -1) != tg_use) {
+            continue;
+        }
+        if (entry_is_failed(e)) {
+            failed.push_back(e);
+        } else if (entry_has_mean_tps(e)) {
+            ok.push_back({ e.value("mean_tps", 0.0), e });
+        }
+    }
+
+    if (ok.empty() && failed.empty()) {
+        return false;
+    }
+
+    std::sort(ok.begin(), ok.end(), [](const ranked_ok & a, const ranked_ok & b) {
+        if (a.mean != b.mean) {
+            return a.mean > b.mean;
+        }
+        return a.e.value("tag", "") < b.e.value("tag", "");
+    });
+
+    fprintf(stderr, "llama-tweak explain: request pp=%d tg=%d -> cache pp=%d tg=%d\n", pp, tg, pp_use, tg_use);
+
+    int rank = 0;
+    for (const auto & row : ok) {
+        rank++;
+        const json & e = row.e;
+        const int    nruns = e.value("runs", 0);
+        fprintf(stderr, "  %d. %s  %.2f tok/s", rank, e.value("tag", "?").c_str(), row.mean);
+        fprintf(stderr, "  (runs=%d", nruns);
+        if (e.contains("stddev_tps") && e["stddev_tps"].is_number() && nruns > 1) {
+            fprintf(stderr, ", stddev=%.2f", e.value("stddev_tps", 0.0));
+        }
+        fprintf(stderr, ")\n");
+    }
+
+    if (!failed.empty()) {
+        fprintf(stderr, "  failed (llama-bench did not complete successfully):\n");
+        for (const auto & e : failed) {
+            fprintf(stderr, "  - %s", e.value("tag", "?").c_str());
+            if (e.contains("exit_code") && e["exit_code"].is_number()) {
+                fprintf(stderr, "  exit=%d", e.value("exit_code", 0));
+            }
+            if (e.contains("attempted_runs") && e["attempted_runs"].is_number()) {
+                fprintf(stderr, "  attempted_runs=%d", e.value("attempted_runs", 0));
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+
     return true;
 }
 

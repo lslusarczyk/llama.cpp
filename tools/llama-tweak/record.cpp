@@ -215,6 +215,22 @@ static double stdev_vec(const std::vector<double> & v) {
     return std::sqrt(s / (double) (v.size() - 1));
 }
 
+static json bench_entry_base(const llama_tweak_bench_config & c, int pp, int tg) {
+    json e;
+    e["tag"]                     = c.id;
+    e["pp"]                      = pp;
+    e["tg"]                      = tg;
+    e["backend_kind"]            = c.backend_kind;
+    e["ggml_device"]             = c.ggml_device;
+    e["openvino_device"]         = c.openvino_device;
+    e["openvino_stateful"]       = c.openvino_stateful;
+    e["openvino_phase_split"]    = false;
+    e["openvino_prefill_device"] = "";
+    e["openvino_decode_device"]  = "";
+    e["sycl_device_selector"]    = "";
+    return e;
+}
+
 static void usage() {
     fprintf(stderr,
             "usage: llama-tweak show\n"
@@ -327,15 +343,11 @@ int llama_tweak_record_main(int argc, char ** argv) {
                 tg = std::atoi(argv[++j]);
             }
         }
-        llama_tweak_plan plan;
-        if (!llama_tweak_resolve(model, pp, tg, plan)) {
+        if (!llama_tweak_explain(model, pp, tg)) {
             fprintf(stderr, "llama-tweak: no cache for %s (pp=%d tg=%d). Run: llama-tweak record -m ...\n", model.c_str(),
                     pp, tg);
             return 1;
         }
-        fprintf(stderr, "best: %s backend=%s ggml_dev=%s cache_pp=%d cache_tg=%d expected=%.2f tok/s\n",
-                plan.selected_tag.c_str(), plan.backend_kind.c_str(), plan.ggml_device.c_str(), plan.resolved_pp,
-                plan.resolved_tg, plan.expected_tps);
         return 0;
     }
 
@@ -399,31 +411,33 @@ int llama_tweak_record_main(int argc, char ** argv) {
                 fprintf(stderr, "  run %d: %.2f tok/s\n", r + 1, run.tps);
             }
             if (samples.empty()) {
-                fprintf(stderr, "llama-tweak: no cache entry for %s pp=%d tg=%d (backend unavailable)\n", c.id.c_str(), pp,
-                        tg);
+                fprintf(stderr, "llama-tweak: no successful runs for %s pp=%d tg=%d (backend unavailable)\n", c.id.c_str(),
+                        pp, tg);
                 if (have_fail) {
                     print_backend_failure(c.id, pp, tg, last_fail);
                 }
                 if (have_fail && !last_fail.replay_cmd.empty()) {
                     fprintf(stderr, "last replay:\n  %s\n", last_fail.replay_cmd.c_str());
                 }
+                json e = bench_entry_base(c, pp, tg);
+                e["status"]         = "failed";
+                e["attempted_runs"] = runs;
+                if (have_fail && last_fail.exit_code >= 0) {
+                    e["exit_code"] = last_fail.exit_code;
+                }
+                llama_tweak_merge_entry(doc, e);
                 continue;
             }
-            json e;
-            e["tag"]                      = c.id;
-            e["pp"]                       = pp;
-            e["tg"]                       = tg;
-            e["backend_kind"]             = c.backend_kind;
-            e["ggml_device"]              = c.ggml_device;
-            e["openvino_device"]          = c.openvino_device;
-            e["openvino_stateful"]        = c.openvino_stateful;
-            e["openvino_phase_split"]     = false;
-            e["openvino_prefill_device"]  = "";
-            e["openvino_decode_device"]   = "";
-            e["sycl_device_selector"]     = "";
-            e["mean_tps"]                 = mean_vec(samples);
-            e["stddev_tps"]               = stdev_vec(samples);
-            e["runs"]                     = (int) samples.size();
+            json e = bench_entry_base(c, pp, tg);
+            e["status"]   = "ok";
+            e["mean_tps"] = mean_vec(samples);
+            e["runs"]     = (int) samples.size();
+            if (samples.size() >= 2) {
+                e["stddev_tps"] = stdev_vec(samples);
+            }
+            if (have_fail) {
+                e["bench_failed_runs"] = runs - (int) samples.size();
+            }
             llama_tweak_merge_entry(doc, e);
         }
     }

@@ -33,6 +33,9 @@ bool llama_tweak_runtime_enabled();
 // Nearest benchmarked pp (and tg) in cache; picks fastest backend for that bucket.
 bool llama_tweak_resolve(const std::string & model_path, int pp, int tg, llama_tweak_plan & out);
 
+// Ranked cache dump for one (pp, tg) bucket (nearest pp/tg in cache).
+bool llama_tweak_explain(const std::string & model_path, int pp, int tg);
+
 void llama_tweak_apply_env(const llama_tweak_plan & plan);
 
 int llama_tweak_record_main(int argc, char ** argv);
