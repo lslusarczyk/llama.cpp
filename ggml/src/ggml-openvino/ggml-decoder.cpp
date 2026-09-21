@@ -77,12 +77,18 @@ GgmlOvDecoder::GgmlOvDecoder(ggml_cgraph * cgraph,
     add_extra_inputs();
 }
 
+bool GgmlOvDecoder::has_same_graph(const ggml_cgraph * cgraph) const {
+    return cgraph->uid != 0 && cgraph->uid == m_cgraph_uid;
+}
+
 void GgmlOvDecoder::update_io(ggml_cgraph * cgraph) {
     m_cgraph = cgraph;
     m_model_inputs.clear();
     m_model_outputs.clear();
     m_node_info_list.clear();
+    m_node_dynamic_dims.clear();
     set_input_output();
+    compute_node_dynamic_dims();
     compute_model_inputs();
     compute_model_outputs();
 }
@@ -219,6 +225,8 @@ static std::string get_tensor_graph_input_ov_name(const GgmlOvDecoder * decoder,
 }
 
 void GgmlOvDecoder::set_input_output() {
+    m_cgraph_uid = m_cgraph->uid;
+
     for (int node_n = 0; node_n < m_cgraph->n_nodes; node_n++) {
         auto * node = m_cgraph->nodes[node_n];
 

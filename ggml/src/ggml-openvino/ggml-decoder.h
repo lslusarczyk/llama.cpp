@@ -354,6 +354,10 @@ public:
 
     void update_io(ggml_cgraph * cgraph);
 
+    // The cached io holds tensor pointers, so it only fits the graph it was built from.
+    // A rebuilt graph gets a new uid, also when llama.cpp swaps to another graph arena.
+    bool has_same_graph(const ggml_cgraph * cgraph) const;
+
     static bool is_inp_tok(const ggml_tensor * tensor, const ggml_tensor * op) {
         return op->op == GGML_OP_GET_ROWS && tensor == op->src[1] && op->src[0]->op == GGML_OP_NONE;
     }
@@ -466,6 +470,7 @@ private:
     void validate_cgraph() const;
 
     ggml_cgraph * m_cgraph = nullptr;
+    uint64_t m_cgraph_uid = 0;
     std::map<std::string, ggml_tensor *> m_inputs;
 
     std::map<std::string, ov::frontend::ggml::ModelInputInfo> m_model_inputs;
