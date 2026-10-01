@@ -3,7 +3,6 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -253,14 +252,11 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     dnnl::stream    strm   = ctx.stream_dnnl(stream);
 
     const ggml_sycl_fattn_extra extra = ggml_sycl_fattn_get_extra(dst);
+    // the dst allocation reserves staging space for every kernel that can run on this node
+    GGML_ASSERT(extra.Q_buffer_ptr && extra.scale_buffer_ptr && extra.out_buffer_ptr);
 
     // Q: always f32 -- copy to dense f16.
-    std::optional<ggml_sycl_pool_alloc<sycl::half>> Qf_pool;
     sycl::half * Qf_ptr = (sycl::half *) extra.Q_buffer_ptr;
-    if (!Qf_ptr) {
-        Qf_pool.emplace(ctx.pool(), (size_t) H * q * d);
-        Qf_ptr = Qf_pool->get();
-    }
     cont_to_f16_sycl<float>((const char *) Q->data, Qf_ptr, d, q, H, mb, Q->nb[1], Q->nb[2], Q->nb[3], stream);
 
     // K/V: bind the f16 cache in place. llama.cpp permutes it to [token][head][dim], so its head
@@ -270,13 +266,11 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     sycl::half * V_ptr = nullptr;
     std::array<int64_t, 5> k_str{ Hkv * seq * d, seq * d, seq * d, d, 1 };
     std::array<int64_t, 5> v_str = k_str;
-    std::optional<ggml_sycl_pool_alloc<sycl::half>> Kf_pool;
-    std::optional<ggml_sycl_pool_alloc<sycl::half>> Vf_pool;
-    // Helper: hand out reserved space, or fall back to the pool.
-    auto stage_k = [&](size_t n) { if (extra.K_buffer_ptr) { return (sycl::half *) extra.K_buffer_ptr; }
-                                  Kf_pool.emplace(ctx.pool(), n); return Kf_pool->get(); };
-    auto stage_v = [&](size_t n) { if (extra.V_buffer_ptr) { return (sycl::half *) extra.V_buffer_ptr; }
-                                  Vf_pool.emplace(ctx.pool(), n); return Vf_pool->get(); };
+    const bool binds_kv = ggml_sycl_fattn_onednn_binds_kv(K, V);
+    // a cache that is not bound in place gets its staging space reserved as well
+    GGML_ASSERT(binds_kv || (extra.K_buffer_ptr && extra.V_buffer_ptr));
+    sycl::half * K_stage = (sycl::half *) extra.K_buffer_ptr;
+    sycl::half * V_stage = (sycl::half *) extra.V_buffer_ptr;
 
     auto elem_strides = [](const ggml_tensor * t) {
         const int64_t s1 = (int64_t) (t->nb[1] / t->nb[0]);
@@ -286,19 +280,19 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         return std::array<int64_t, 5>{ s3, s2, s2, s1, 1 };
     };
 
-    if (ggml_sycl_fattn_onednn_binds_kv(K, V)) {
+    if (binds_kv) {
         K_ptr = (sycl::half *) K->data;
         V_ptr = (sycl::half *) V->data;
         k_str = elem_strides(K);
         v_str = elem_strides(V);
     } else if (K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16) {
-        K_ptr = stage_k((size_t) Hkv * seq * d);
-        V_ptr = stage_v((size_t) Hkv * seq * d);
+        K_ptr = K_stage;
+        V_ptr = V_stage;
         cont_to_f16_sycl<sycl::half>((const char *) K->data, K_ptr, d, seq, Hkv, mb, K->nb[1], K->nb[2], K->nb[3], stream);
         cont_to_f16_sycl<sycl::half>((const char *) V->data, V_ptr, d, seq, Hkv, mb, V->nb[1], V->nb[2], V->nb[3], stream);
     } else if (ggml_is_quantized(K->type)) {
-        // Quantized K/V: dequant to dense F16 using pool, same lifetime as F16 path.
-        K_ptr = stage_k((size_t) ggml_nelements(K));
+        // Quantized K/V: dequant to dense F16, same lifetime as F16 path.
+        K_ptr = K_stage;
         {
             const char * K_data = (const char *)K->data;
             const bool k_non_dense = ((int64_t)K->ne[1] * K->nb[1] != K->nb[2]) && K->ne[2] > 1;
@@ -332,7 +326,7 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         // data pointer), their logical values differ because the quantized
         // elements at different positions/offsets represent different K/V
         // data. Master's F16 path also never aliases K and V.
-        V_ptr = stage_v((size_t) ggml_nelements(V));
+        V_ptr = V_stage;
         {
             const char * V_data = (const char *)V->data;
             const bool v_non_dense = ((int64_t)V->ne[1] * V->nb[1] != V->nb[2]) && V->ne[2] > 1;
@@ -363,10 +357,10 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         }
     } else {
         // F32: strided copy to dense F16 via cont_to_f16_sycl<float>.
-        K_ptr = stage_k((size_t) ggml_nelements(K));
+        K_ptr = K_stage;
         cont_to_f16_sycl<float>((const char *) K->data, K_ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
                                 K->nb[1], K->nb[2], K->nb[3], stream);
-        V_ptr = stage_v((size_t) ggml_nelements(V));
+        V_ptr = V_stage;
         cont_to_f16_sycl<float>((const char *) V->data, V_ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
                                 V->nb[1], V->nb[2], V->nb[3], stream);
     }
@@ -380,21 +374,11 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     // instead -- the value is captured into the command, so no host memory has to outlive the
     // call, and the enqueue stays async.
     const sycl::half scale_h = (sycl::half) (1.0f / kq_scale);
-    std::optional<ggml_sycl_pool_alloc<sycl::half>> scbuf;
     sycl::half * scale_dev = (sycl::half *) extra.scale_buffer_ptr;
-    if (!scale_dev) {
-        scbuf.emplace(ctx.pool(), 1);
-        scale_dev = scbuf->get();
-    }
     stream->single_task([=]() { *scale_dev = scale_h; });
 
     // f16 contiguous SDPA out [mb,H,q,d]
-    std::optional<ggml_sycl_pool_alloc<sycl::half>> outf_pool;
     sycl::half * outf_ptr = (sycl::half *) extra.out_buffer_ptr;
-    if (!outf_ptr) {
-        outf_pool.emplace(ctx.pool(), (size_t) H * q * d);
-        outf_ptr = outf_pool->get();
-    }
 
     // compile once per (device, shape, KV strides), reuse across layers/calls. Stride 2 always
     // repeats stride 1 and stride 4 is always 1, so the key covers every entry that can differ.
